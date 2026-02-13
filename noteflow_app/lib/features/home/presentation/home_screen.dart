@@ -347,7 +347,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                 ),
               ),
-            ),
             const SizedBox(height: 16),
             Card(
               child: Padding(

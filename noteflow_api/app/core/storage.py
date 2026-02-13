@@ -51,7 +51,14 @@ class StorageService:
 
     def get_upload_path(self, file_key: str) -> str:
         """Get local path for an uploaded file (download from S3 if needed)."""
-        local_path = Path(settings.upload_dir) / file_key
+        from pathlib import Path
+        import os
+        
+        # Always return absolute path to avoid issues in threads/subprocesses
+        base_dir = Path(settings.upload_dir)
+        if not base_dir.is_absolute():
+            base_dir = Path.cwd() / base_dir
+        local_path = base_dir / file_key
 
         if self.is_s3 and not local_path.exists():
             local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -59,7 +66,7 @@ class StorageService:
                 settings.s3_bucket, f"uploads/{file_key}", str(local_path)
             )
 
-        return str(local_path)
+        return str(local_path.resolve())
 
     # ── Presigned URLs ────────────────────────────────────────
 

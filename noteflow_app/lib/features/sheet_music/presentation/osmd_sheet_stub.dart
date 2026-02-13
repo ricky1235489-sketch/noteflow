@@ -4,14 +4,14 @@ import 'package:flutter/material.dart';
 class OsmdSheetWidget extends StatelessWidget {
   final String musicXml;
   final String? title;
-  final double? currentTime;
+  final int? currentMeasure; // Current measure index for cursor
   final VoidCallback? onReady;
 
   const OsmdSheetWidget({
     super.key,
     required this.musicXml,
     this.title,
-    this.currentTime,
+    this.currentMeasure,
     this.onReady,
   });
 

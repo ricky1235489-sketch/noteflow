@@ -51,6 +51,12 @@ class TranscriptionService:
         3. quantize_midi 做唯一一次量化（16th note grid），避免多次量化累積誤差
         4. 只有當 Pop2Piano 輸出缺少低音部時，才用 ArrangementPatterns 補充左手
         """
+        import os
+        # Ensure we have an absolute path
+        audio_path = str(Path(audio_path).resolve())
+        print(f"[TRANSCRIBE] Processing: {audio_path}")
+        print(f"[TRANSCRIBE] Exists: {os.path.exists(audio_path)}")
+        
         self._validate_file(audio_path)
 
         output_dir = Path(settings.output_dir) / transcription_id

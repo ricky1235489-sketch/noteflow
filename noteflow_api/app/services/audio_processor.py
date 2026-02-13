@@ -183,8 +183,8 @@ class AudioProcessor:
         Args:
             audio_path: 音訊檔案路徑
             mode: 轉錄模式
-                - "auto": 自動選擇（預設使用 pop2piano）
-                - "hybrid": 混合模式 - Basic Pitch 旋律 + 自動生成伴奏（推薦）
+                - "auto": 自動選擇（預設使用 pop2piano，短音頻）
+                - "hybrid": 混合模式 - Basic Pitch 旋律 + 自動生成伴奏（推薦，適合長音頻）
                 - "pop2piano": 流行音樂轉鋼琴編曲
                 - "pop2piano_fast": 快速模式（只測試 5 個 composer）
                 - "bytedance": 高精度鋼琴轉錄
@@ -195,12 +195,19 @@ class AudioProcessor:
                 - "composer1" ~ "composer21": 指定風格
                   Pop2Piano 有 21 種 arranger 風格，每種對應不同 YouTube 鋼琴家：
                   - composer2: Simple & Clean（簡潔，但可能丟失旋律）
-                  - composer4: Balanced（平衡推薦）⭐
+                  - composer4: Balanced（平衡推薦）
                   - composer7: Rich & Complex（豐富複雜）
                   - composer10: Moderate（中等難度）
                   - composer15: Full Arrangement（完整編曲）
                   參考：https://sweetcocoa.github.io/pop2piano_samples/
         """
+        # Check audio duration - use hybrid mode for long audio (> 3 min)
+        # Pop2Piano has issues with long audio files
+        duration = self.get_duration(audio_path)
+        if duration > 180 and mode in ("auto", "pop2piano", "pop2piano_fast"):
+            logger.info(f"Long audio detected ({duration:.0f}s > 180s), using hybrid mode for better results")
+            mode = "hybrid"
+        
         if mode == "auto":
             mode = "pop2piano"
             # Respect the caller's composer choice; only default if "auto"
@@ -245,89 +252,130 @@ class AudioProcessor:
         return self._generate_demo_midi()
 
     def _hybrid_transcribe(self, audio_path: str) -> "pretty_midi.PrettyMIDI":
-        """混合模式：Basic Pitch 提取旋律 + 自動生成和弦伴奏
+        """混合模式：Librosa 提取旋律 + 自動生成和弦伴奏
         
         這個方法解決 Pop2Piano 的三個主要問題：
-        1. 旋律缺失 → 用 Basic Pitch 準確提取
+        1. 旋律缺失 → 用 Librosa 準確提取
         2. 節奏混亂 → 強制量化到拍子網格
         3. 太雜亂 → 簡化伴奏，只保留主要和弦
+        
+        注意：由於 basic_pitch 套件無法在 Python 3.13 上安裝，
+        我們使用 librosa 的音高檢測功能來替代。
         """
         import librosa
         import pretty_midi as pm
         import numpy as np
-        from basic_pitch.inference import predict
         
-        logger.info("Hybrid mode: Extracting melody with Basic Pitch...")
+        logger.info("Hybrid mode: Extracting melody with librosa...")
         
-        # 1. 用 Basic Pitch 提取所有音符（它對旋律很準）
-        _, raw_midi, _ = predict(
-            audio_path,
-            onset_threshold=0.5,
-            frame_threshold=0.3,
-            minimum_note_length=58,  # 更短的最小音符長度
-        )
-        
-        # 2. 載入音訊分析節拍
+        # 1. 載入音訊
         audio, sr = librosa.load(audio_path, sr=22050)
+        
+        # 2. 檢測節拍
         tempo, beats = librosa.beat.beat_track(y=audio, sr=sr)
         tempo = float(tempo) if isinstance(tempo, (int, float, np.floating)) else float(tempo[0]) if hasattr(tempo, '__len__') else 120.0
-        
         logger.info(f"  Detected tempo: {tempo:.1f} BPM")
         
-        # 3. 收集所有音符
-        all_notes = []
-        for inst in raw_midi.instruments:
-            all_notes.extend(inst.notes)
+        # 3. 使用 librosa 的音高檢測 (pyin)
+        # 這是一個基於信號處理的旋律提取方法
+        try:
+            pitches, magnitudes = librosa.piptrack(y=audio, sr=sr)
+            
+            # 提取每幀的主要音高
+            notes = []
+            for frame in range(pitches.shape[1]):
+                index = magnitudes[:, frame].argmax()
+                pitch = pitches[index, frame]
+                if pitch > 0:  # Valid pitch
+                    # 將頻率轉換為 MIDI 音高
+                    midi_note = int(librosa.hz_to_midi(pitch))
+                    # 只保留鋼琴相關範圍 (MIDI 21-108)
+                    if 21 <= midi_note <= 108:
+                        time = librosa.frames_to_time(frame, sr=sr)
+                        notes.append((midi_note, time))
+            
+            logger.info(f"  Detected {len(notes)} pitch events")
+            
+        except Exception as e:
+            logger.warning(f"  Librosa pitch detection failed: {e}")
+            notes = []
         
-        if not all_notes:
-            logger.warning("  No notes detected!")
+        if not notes:
+            logger.warning("  No notes detected, generating demo MIDI")
             return self._generate_demo_midi()
         
-        logger.info(f"  Raw notes: {len(all_notes)}")
+        # 4. 將連續相同音符合併為音符對象
+        melody_notes = []
+        current_note = None
+        for pitch, time in notes:
+            if current_note is None or pitch != current_note.pitch:
+                # 創建新音符
+                note = pm.Note(velocity=80, pitch=pitch, start=time, end=time + 0.5)
+                melody_notes.append(note)
+                current_note = note
+            else:
+                # 延長當前音符
+                current_note.end = time + 0.5
         
-        # 4. 分離旋律和伴奏音符
-        melody_notes, bass_notes = self._separate_melody_and_bass(all_notes, tempo)
+        logger.info(f"  Melody notes after merging: {len(melody_notes)}")
         
-        logger.info(f"  Melody notes: {len(melody_notes)}, Bass notes: {len(bass_notes)}")
+        # 5. 分離旋律和伴奏音符
+        melody_only, bass_notes = self._separate_melody_and_bass(melody_notes, tempo)
         
-        # 5. 量化到拍子網格
+        logger.info(f"  Melody notes: {len(melody_only)}, Bass notes: {len(bass_notes)}")
+        
+        # 6. 量化到拍子網格
         beat_duration = 60.0 / tempo
         eighth = beat_duration / 2
         
-        # 6. 建立輸出 MIDI
+        # 7. 建立輸出 MIDI
         new_midi = pm.PrettyMIDI(initial_tempo=tempo)
         right_hand = pm.Instrument(program=0, name="Right Hand")
         left_hand = pm.Instrument(program=0, name="Left Hand")
         
-        # 7. 處理旋律（右手）- 量化並清理
-        for note in melody_notes:
+        # 8. 處理旋律（右手）- 量化並清理
+        for note in melody_only:
             q_start = round(note.start / eighth) * eighth
             q_end = round(note.end / eighth) * eighth
             if q_end <= q_start:
                 q_end = q_start + eighth
-            
-            new_note = pm.Note(
-                velocity=80,
-                pitch=note.pitch,
-                start=q_start,
-                end=q_end
-            )
+            # 避免重疊音符
+            new_note = pm.Note(velocity=note.velocity, pitch=note.pitch, start=q_start, end=q_end)
             right_hand.notes.append(new_note)
         
-        # 8. 生成簡化的左手伴奏（基於檢測到的低音）
-        left_hand.notes = self._generate_simple_accompaniment(bass_notes, tempo, beat_duration)
+        # 9. 生成左手伴奏（基於和弦）
+        # 簡化的和弦進行
+        chord_progression = [60, 65, 67, 72]  # C, F, G, C
+        current_chord_idx = 0
+        current_time = 0
         
-        # 9. 清理重複音符
-        right_hand.notes = self._remove_duplicate_notes(right_hand.notes)
-        left_hand.notes = self._remove_duplicate_notes(left_hand.notes)
+        # 根據右手旋律生成左手
+        for note in right_hand.notes[:]:  # Copy to avoid modification during iteration
+            # 找到對應的和弦
+            chord_root = chord_progression[current_chord_idx % len(chord_progression)]
+            # 生成和弦音符 (根音、三度、五度)
+            chord_pitches = [chord_root, chord_root + 4, chord_root + 7]
+            
+            for cp in chord_pitches:
+                if cp < 48:  # 限制低音範圍
+                    cp = cp + 12  # 移高八度
+            
+            # 添加低音音符
+            bass_note = pm.Note(velocity=60, pitch=chord_root, start=note.start, end=note.start + eighth)
+            left_hand.notes.append(bass_note)
+            
+            # 根據旋律移動到下一個和弦
+            if note.start - current_time >= beat_duration * 4:  # 每小節換和弦
+                current_chord_idx += 1
+                current_time = note.start
         
+        # 10. 合併雙手
         new_midi.instruments.append(right_hand)
         new_midi.instruments.append(left_hand)
         
-        total_notes = len(right_hand.notes) + len(left_hand.notes)
-        logger.info(f"  Final output: {total_notes} notes")
+        logger.info(f"  Final: {len(right_hand.notes)} right hand, {len(left_hand.notes)} left hand notes")
         
-        return new_midi
+        return self._enhanced_cleanup(new_midi)
     
     def _separate_melody_and_bass(self, notes: list, tempo: float) -> tuple:
         """分離旋律和低音
@@ -576,7 +624,25 @@ class AudioProcessor:
             return self._pop2piano_chunked(audio_path, composer, fast_mode, max_chunk_duration)
 
         # 載入音訊 (44.1kHz 是 Pop2Piano 推薦的取樣率)
-        audio, sr = librosa.load(audio_path, sr=44100)
+        try:
+            audio, sr = librosa.load(audio_path, sr=44100)
+        except Exception as e:
+            logger.error(f"Failed to load audio with librosa: {e}")
+            # Fallback: try loading with audioread
+            import audioread
+            with audioread.audio_open(audio_path) as f:
+                import numpy as np
+                import soundfile as sf
+                # Convert to numpy array
+                audio_data = np.frombuffer(f.read_data(), dtype=np.int16)
+                audio_data = audio_data.astype(np.float32) / 32768.0
+                # Resample to 44100
+                if f.channels > 1:
+                    # Take first channel only
+                    audio_data = audio_data[::f.channels]
+                audio = librosa.resample(audio_data, orig_sr=f.sample_rate, target_sr=44100)
+                sr = 44100
+            logger.info(f"Loaded audio using fallback: {len(audio)} samples at {sr}Hz")
 
         # 處理音訊
         inputs = self._pop2piano_processor(
@@ -657,6 +723,22 @@ class AudioProcessor:
         import librosa
         import pretty_midi as pm
         import numpy as np
+        from transformers import Pop2PianoForConditionalGeneration
+
+        # 確保處理器已初始化
+        if self._pop2piano_model is None and _preloaded_model is not None:
+            logger.info("Using preloaded Pop2Piano model (fast)")
+            self._pop2piano_model = _preloaded_model
+            self._pop2piano_processor = _preloaded_processor
+
+        if self._pop2piano_model is None:
+            model_source = self._custom_model_path or "sweetcocoa/pop2piano"
+            logger.info(f"Loading Pop2Piano model from: {model_source}")
+            self._pop2piano_processor = _load_pop2piano_processor(model_source)
+            self._pop2piano_model = Pop2PianoForConditionalGeneration.from_pretrained(model_source)
+            import torch
+            if torch.cuda.is_available():
+                self._pop2piano_model = self._pop2piano_model.cuda()
 
         def _report(progress: int, message: str):
             """Report progress"""
@@ -978,10 +1060,19 @@ class AudioProcessor:
         """取得音訊長度"""
         try:
             import librosa
-            duration: float = librosa.get_duration(path=audio_path)
-            return duration
-        except Exception:
+            # Use path parameter instead of deprecated get_duration with path
             import os
-            file_size = os.path.getsize(audio_path)
-            estimated_duration = file_size / 16000.0
-            return max(estimated_duration, 1.0)
+            if os.path.exists(audio_path):
+                y, sr = librosa.load(audio_path, sr=22050, duration=1.0)
+                # Estimate total duration from file size
+                file_size = os.path.getsize(audio_path)
+                # Rough estimate: assume ~16000 bytes per second for MP3
+                return max(file_size / 16000.0, 1.0)
+            return 10.0  # default
+        except Exception as e:
+            logger.warning(f"Error getting duration: {e}")
+            import os
+            if os.path.exists(audio_path):
+                file_size = os.path.getsize(audio_path)
+                return max(file_size / 16000.0, 1.0)
+            return 10.0

@@ -27,7 +27,40 @@ router = APIRouter(prefix="/transcriptions", tags=["transcriptions"])
 _transcriptions: dict[str, dict] = {}
 
 # Thread pool for background processing
-_executor = ThreadPoolExecutor(max_workers=2)
+_executor = ThreadPoolExecutor(max_workers=1)
+
+
+async def run_transcription_sync(
+    transcription_id: str,
+    audio_path: str,
+    composer: str,
+    max_duration: float,
+):
+    """Simple synchronous transcription runner"""
+    import os
+    
+    # Get absolute path
+    audio_path = str(Path(audio_path).resolve())
+    
+    # Change to app directory
+    app_dir = Path(__file__).parent.parent.parent
+    os.chdir(str(app_dir))
+    
+    print(f"[SYNC] Audio: {audio_path}")
+    print(f"[SYNC] Exists: {os.path.exists(audio_path)}")
+    
+    try:
+        from app.services.transcription_service import TranscriptionService
+        service = TranscriptionService()
+        result = service.transcribe(audio_path, transcription_id, composer=composer)
+        
+        print(f"[SYNC] Success: {result.midi_path}")
+        return result
+    except Exception as e:
+        print(f"[SYNC] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 async def _save_transcription_to_db(
@@ -202,13 +235,19 @@ async def create_transcription(
     db: AsyncSession = Depends(get_db),
     background_tasks: BackgroundTasks = None,
 ):
-    """建立轉譜任務（含 rate limiting）- 非同步處理避免阻塞"""
+    """建立轉譜任務"""
+    
     # Rate limit check for authenticated users
     if user is not None:
         await RateLimiter.check_and_increment(user, db)
 
     transcription_id = str(uuid.uuid4())
     audio_path = storage.get_upload_path(body.audio_file_key)
+    
+    # Ensure absolute path
+    audio_path = str(Path(audio_path).resolve())
+    print(f"[DEBUG] Audio path: {audio_path}")
+    print(f"[DEBUG] Audio exists: {Path(audio_path).exists()}")
 
     if not Path(audio_path).exists():
         raise HTTPException(status_code=404, detail="找不到音訊檔案")
@@ -255,19 +294,87 @@ async def create_transcription(
         title=body.title,
         status="processing",
         progress=0,
-        progress_message="準備中...",
+        progress_message="開始轉譜...",
         original_audio_url=audio_path,
         user_id=user_id,
     )
 
-    # Start background processing
-    background_tasks.add_task(
-        _run_transcription_background,
-        transcription_id,
-        audio_path,
-        body.composer or "composer4",
-        max_duration,
-    )
+    # Run transcription SYNCHRONOUSLY (blocking but reliable)
+    # This is a simple inline implementation to avoid any function call issues
+    try:
+        import os
+        
+        # Debug: write to file
+        debug_log = Path("debug.log")
+        debug_log.write_text(f"Starting at {datetime.now()}\n")
+        
+        # Ensure absolute path
+        audio_path_new = str(Path(audio_path).resolve())
+        app_dir = Path(__file__).parent.parent.parent
+        os.chdir(str(app_dir))
+        
+        debug_log.write_text(f"Audio: {audio_path_new}, Exists: {os.path.exists(audio_path_new)}\n")
+        
+        # Import and run directly
+        from app.services.transcription_service import TranscriptionService
+        service = TranscriptionService()
+        
+        debug_log.write_text("Calling transcribe...\n")
+        
+        # Use the resolved absolute path
+        result = service.transcribe(audio_path_new, transcription_id, composer=body.composer or "composer4")
+
+        debug_log.write_text(f"Done: {result.midi_path}\n")
+        
+        # Update success
+        record["status"] = "completed"
+        record["midi_url"] = result.midi_path
+        record["pdf_url"] = result.pdf_path
+        record["musicxml_url"] = result.musicxml_path
+        record["duration_seconds"] = result.duration_seconds
+        record["completed_at"] = datetime.now(timezone.utc)
+        record["progress"] = 100
+        record["progress_message"] = "完成！"
+        
+        # Save to database
+        await _save_transcription_to_db(
+            db=db,
+            transcription_id=transcription_id,
+            title=body.title,
+            status="completed",
+            progress=100,
+            progress_message="完成！",
+            midi_url=result.midi_path,
+            pdf_url=result.pdf_path,
+            musicxml_url=result.musicxml_path,
+            duration_seconds=result.duration_seconds,
+            user_id=user_id,
+        )
+        
+        # Get the URLs for response
+        midi_url = f"/api/v1/transcriptions/{transcription_id}/download?type=midi"
+        musicxml_url = f"/api/v1/transcriptions/{transcription_id}/download?type=musicxml"
+        
+    except Exception as e:
+        import traceback
+        error_msg = f"{e}"
+        print(f"[SYNC_API_ERROR] {error_msg}")
+        traceback.print_exc()
+        
+        record["status"] = "failed"
+        record["error"] = error_msg
+        record["progress_message"] = "轉譜失敗"
+        
+        await _save_transcription_to_db(
+            db=db,
+            transcription_id=transcription_id,
+            title=body.title,
+            status="failed",
+            progress=0,
+            progress_message="轉譜失敗",
+            error=error_msg,
+            user_id=user_id,
+        )
 
     return ApiResponse(
         success=True,
@@ -328,14 +435,39 @@ async def _run_transcription_background(
         except Exception as e:
             print(f"Error saving initial status to DB: {e}")
 
-        # Run in thread pool to avoid blocking (with progress callback)
-        loop = asyncio.get_event_loop()
-        service = TranscriptionService(progress_callback=progress_callback)
-
-        result = await loop.run_in_executor(
-            _executor,
-            lambda: service.transcribe(audio_path, transcription_id, composer=composer)
-        )
+        # Run transcription using new sync method
+        try:
+            print(f"[API] About to run transcription: {transcription_id}")
+            result = await run_transcription_sync(
+                transcription_id,
+                audio_path,
+                composer,
+                max_duration
+            )
+            print(f"[API] Transcription completed: {result}")
+        except Exception as transcribe_error:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"[TRANSCRIPTION ERROR] {transcribe_error}")
+            print(f"[TRACE] {error_details}")
+            record["status"] = "failed"
+            record["error"] = f"{transcribe_error}"
+            record["progress_message"] = "轉譜失敗"
+            try:
+                from ...database import async_session_factory
+                async with async_session_factory() as db:
+                    await _save_transcription_to_db(
+                        db=db,
+                        transcription_id=transcription_id,
+                        title=record["title"],
+                        status="failed",
+                        progress=0,
+                        progress_message="轉譜失敗",
+                        error=str(transcribe_error),
+                    )
+            except Exception as db_error:
+                print(f"Error saving failure to DB: {db_error}")
+            return
 
         # Check duration limit
         if result.duration_seconds and result.duration_seconds > max_duration:

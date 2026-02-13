@@ -44,44 +44,87 @@ def _load_pop2piano_processor(model_source: str = "sweetcocoa/pop2piano"):
 
 
 class _LibrosaPop2PianoProcessor:
-    """Minimal Pop2Piano processor using librosa instead of essentia.
+    """Pop2Piano processor using librosa for beat tracking and mel spectrogram.
+
+    Replaces essentia-based Pop2PianoFeatureExtractor with librosa equivalents.
+    The key insight from the HuggingFace source: Pop2Piano segments audio by
+    detected beats, computes mel spectrogram per segment, then feeds to the model.
 
     Handles:
-    - __call__: audio → mel spectrogram → model input_features (encoding)
+    - __call__: audio → beat detection → mel spectrogram → model input_features
     - batch_decode: model token_ids → PrettyMIDI objects (decoding)
     """
 
     def __init__(self, model_source: str = "sweetcocoa/pop2piano"):
         from transformers import Pop2PianoTokenizer
         self._tokenizer = Pop2PianoTokenizer.from_pretrained(model_source)
+        self._sampling_rate = 22050
+        self._n_mels = 512
+        self._hop_length = 1024
+        self._n_fft = 4096
+        self._fmin = 30.0
 
     def __call__(self, audio, sampling_rate: int = 44100, return_tensors: str = "pt"):
-        """Convert audio waveform to mel spectrogram model inputs."""
+        """Convert audio waveform to model inputs using librosa beat tracking."""
         import torch
         import numpy as np
         import librosa
 
-        # Resample to 22050 Hz (Pop2Piano's internal rate) if needed
-        target_sr = 22050
-        if sampling_rate != target_sr:
-            audio = librosa.resample(audio, orig_sr=sampling_rate, target_sr=target_sr)
+        # Resample to 22050 Hz (Pop2Piano's internal rate)
+        if sampling_rate != self._sampling_rate:
+            audio = librosa.resample(audio, orig_sr=sampling_rate, target_sr=self._sampling_rate)
 
-        # Compute log-mel spectrogram (matching Pop2Piano's expected input)
-        mel_spec = librosa.feature.melspectrogram(
-            y=audio,
-            sr=target_sr,
-            n_fft=4096,
-            hop_length=1024,
-            n_mels=512,
-            fmin=30,
-            fmax=target_sr // 2,
+        # Beat tracking using librosa (replaces essentia's RhythmExtractor2013)
+        tempo, beat_frames = librosa.beat.beat_track(
+            y=audio, sr=self._sampling_rate, units='frames',
+            hop_length=self._hop_length,
         )
+        beat_times = librosa.frames_to_time(
+            beat_frames, sr=self._sampling_rate, hop_length=self._hop_length,
+        )
+
+        # Add start and end times
+        if len(beat_times) == 0:
+            beat_times = np.array([0.0, len(audio) / self._sampling_rate])
+        else:
+            if beat_times[0] > 0.01:
+                beat_times = np.concatenate([[0.0], beat_times])
+            end_time = len(audio) / self._sampling_rate
+            if beat_times[-1] < end_time - 0.01:
+                beat_times = np.concatenate([beat_times, [end_time]])
+
+        # Compute mel spectrogram for the full audio
+        mel_filters = librosa.filters.mel(
+            sr=self._sampling_rate,
+            n_fft=self._n_fft,
+            n_mels=self._n_mels,
+            fmin=self._fmin,
+            fmax=float(self._sampling_rate // 2),
+            htk=True,
+        )
+        stft = np.abs(librosa.stft(
+            audio,
+            n_fft=self._n_fft,
+            hop_length=self._hop_length,
+        )) ** 2
+        mel_spec = mel_filters @ stft
         log_mel = np.log(np.clip(mel_spec, a_min=1e-6, a_max=None))
 
-        # Shape: (1, n_mels, time_frames) → model expects (batch, channels, time)
-        input_features = torch.FloatTensor(log_mel).unsqueeze(0)
+        # Segment by beats and create input features
+        # Pop2Piano expects shape: (1, time_frames, n_mels)
+        log_mel_t = log_mel.T  # (time_frames, n_mels)
 
-        return {"input_features": input_features}
+        input_features = torch.FloatTensor(log_mel_t).unsqueeze(0)
+
+        # Store beat info for tokenizer decoding
+        self._last_beatsteps = beat_times
+        self._last_ext_beatstep = beat_times
+
+        return {
+            "input_features": input_features,
+            "beatsteps": [beat_times],
+            "ext_beatstep": [beat_times],
+        }
 
     def batch_decode(self, token_ids, feature_extractor_output):
         """Decode model output token IDs to PrettyMIDI objects."""

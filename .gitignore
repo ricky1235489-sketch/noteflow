@@ -1,0 +1,42 @@
+# Flutter SDK (local installation)
+flutter/
+
+# Kiro IDE settings
+.kiro/
+
+# Python
+noteflow_api/.venv312/
+noteflow_api/.venv_wsl/
+noteflow_api/**/.venv*/
+noteflow_api/__pycache__/
+noteflow_api/__pycache__/
+noteflow_api/__pycache__/
+noteflow_api/app/__pycache__/
+noteflow_api/app/**/__pycache__/
+*.pyc
+*.pyo
+
+# Backend generated files
+noteflow_api/uploads/
+noteflow_api/outputs/
+noteflow_api/*.db
+noteflow_api/.env
+noteflow_api/.venv312/
+
+# Ignore large model files
+noteflow_api/models/
+noteflow_api/.cache/
+
+# Flutter / Dart
+noteflow_app/.dart_tool/
+noteflow_app/.idea/
+noteflow_app/build/
+noteflow_app/.flutter-plugins
+noteflow_app/.flutter-plugins-dependencies
+noteflow_app/.metadata
+noteflow_app/*.iml
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini

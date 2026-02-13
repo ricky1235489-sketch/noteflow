@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="noteflow_app">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>NoteFlow</title>
+  <link rel="manifest" href="manifest.json">
+
+  <!-- OpenSheetMusicDisplay for beautiful sheet music rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.6/build/opensheetmusicdisplay.min.js"></script>
+  
+  <!-- Tone.js for high-quality MIDI playback with SoundFont -->
+  <script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.min.js"></script>
+  
+  <!-- MIDI Player for direct MIDI file playback -->
+  <script>
+    // Global MIDI player using Tone.js Sampler with piano samples
+    window.NoteFlowMidiPlayer = {
+      sampler: null,
+      midiData: null,
+      isPlaying: false,
+      scheduledEvents: [],
+      startTime: 0,
+      pauseTime: 0,
+      tempo: 1.0,
+      
+      // Initialize with piano samples
+      async init() {
+        if (this.sampler) return;
+        
+        await Tone.start();
+        
+        // Use Salamander Grand Piano samples (free, high quality)
+        const baseUrl = 'https://tonejs.github.io/audio/salamander/';
+        this.sampler = new Tone.Sampler({
+          urls: {
+            A0: 'A0.mp3', C1: 'C1.mp3', 'D#1': 'Ds1.mp3', 'F#1': 'Fs1.mp3',
+            A1: 'A1.mp3', C2: 'C2.mp3', 'D#2': 'Ds2.mp3', 'F#2': 'Fs2.mp3',
+            A2: 'A2.mp3', C3: 'C3.mp3', 'D#3': 'Ds3.mp3', 'F#3': 'Fs3.mp3',
+            A3: 'A3.mp3', C4: 'C4.mp3', 'D#4': 'Ds4.mp3', 'F#4': 'Fs4.mp3',
+            A4: 'A4.mp3', C5: 'C5.mp3', 'D#5': 'Ds5.mp3', 'F#5': 'Fs5.mp3',
+            A5: 'A5.mp3', C6: 'C6.mp3', 'D#6': 'Ds6.mp3', 'F#6': 'Fs6.mp3',
+            A6: 'A6.mp3', C7: 'C7.mp3', 'D#7': 'Ds7.mp3', 'F#7': 'Fs7.mp3',
+            A7: 'A7.mp3', C8: 'C8.mp3',
+          },
+          baseUrl: baseUrl,
+          release: 1,
+        }).toDestination();
+        
+        // Wait for samples to load
+        await Tone.loaded();
+        console.log('NoteFlow MIDI Player initialized with Salamander Piano');
+      },
+      
+      // Convert MIDI note number to Tone.js note name
+      midiToNote(midi) {
+        const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+        const octave = Math.floor(midi / 12) - 1;
+        const note = notes[midi % 12];
+        return note + octave;
+      },
+      
+      // Load MIDI data (array of {pitch, start, duration, velocity})
+      loadMidi(events) {
+        this.midiData = events;
+        this.stop();
+      },
+      
+      // Play from current position
+      play() {
+        if (!this.sampler || !this.midiData) return;
+        if (this.isPlaying) return;
+        
+        this.isPlaying = true;
+        const now = Tone.now();
+        this.startTime = now - this.pauseTime;
+        
+        // Schedule all events
+        this.scheduledEvents = [];
+        for (const event of this.midiData) {
+          const eventTime = event.start / this.tempo;
+          if (eventTime >= this.pauseTime) {
+            const scheduleTime = now + (eventTime - this.pauseTime);
+            const noteName = this.midiToNote(event.pitch);
+            const duration = event.duration / this.tempo;
+            const velocity = event.velocity / 127;
+            
+            const id = Tone.Transport.schedule((time) => {
+              this.sampler.triggerAttackRelease(noteName, duration, time, velocity);
+            }, scheduleTime - now);
+            
+            this.scheduledEvents.push(id);
+          }
+        }
+        
+        Tone.Transport.start();
+      },
+      
+      // Pause playback
+      pause() {
+        if (!this.isPlaying) return;
+        this.isPlaying = false;
+        this.pauseTime = Tone.now() - this.startTime;
+        
+        // Clear scheduled events
+        for (const id of this.scheduledEvents) {
+          Tone.Transport.clear(id);
+        }
+        this.scheduledEvents = [];
+        Tone.Transport.stop();
+      },
+      
+      // Stop and reset
+      stop() {
+        this.isPlaying = false;
+        this.pauseTime = 0;
+        
+        for (const id of this.scheduledEvents) {
+          Tone.Transport.clear(id);
+        }
+        this.scheduledEvents = [];
+        Tone.Transport.stop();
+      },
+      
+      // Seek to position (seconds)
+      seekTo(seconds) {
+        const wasPlaying = this.isPlaying;
+        this.stop();
+        this.pauseTime = seconds;
+        if (wasPlaying) {
+          this.play();
+        }
+      },
+      
+      // Set tempo multiplier
+      setTempo(multiplier) {
+        this.tempo = multiplier;
+        if (this.isPlaying) {
+          const currentPos = Tone.now() - this.startTime;
+          this.stop();
+          this.pauseTime = currentPos;
+          this.play();
+        }
+      },
+      
+      // Play single note (for preview)
+      playNote(midi, velocity = 80, duration = 0.5) {
+        if (!this.sampler) return;
+        const noteName = this.midiToNote(midi);
+        this.sampler.triggerAttackRelease(noteName, duration, Tone.now(), velocity / 127);
+      },
+      
+      // Get current playback position
+      getPosition() {
+        if (!this.isPlaying) return this.pauseTime;
+        return Tone.now() - this.startTime;
+      }
+    };
+  </script>
+  
+  <!-- Firebase SDK for Web -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script>
+    // TODO: 替換為你的 Firebase 專案設定
+    // 前往 https://console.firebase.google.com → 專案設定 → 網頁應用程式
+    const firebaseConfig = {
+      apiKey: "AIzaSyDCeLw9A84GllUf5-Av7SyHaSS9Cb8TAwA",
+      authDomain: "noteflow-da76f.firebaseapp.com",
+      projectId: "noteflow-da76f",
+      storageBucket: "noteflow-da76f.firebasestorage.app",
+      messagingSenderId: "653749509123",
+      appId: "1:653749509123:web:350af7fbbd170cde6f8236",
+      measurementId: "G-J4NSS2BLSB"
+    };
+    try {
+      if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
+        firebase.initializeApp(firebaseConfig);
+      } else {
+        console.warn("Firebase not configured — running in guest/demo mode");
+      }
+    } catch (e) {
+      console.warn("Firebase init failed:", e);
+    }
+  </script>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

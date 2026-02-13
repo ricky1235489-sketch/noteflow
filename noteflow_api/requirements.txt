@@ -16,6 +16,7 @@ librosa>=0.10.0
 tqdm>=4.65.0
 
 # ── AI Models (Pop2Piano) ──
+numpy<2.4                   # numba (librosa dep) requires numpy<2.4
 torch>=2.0.0
 transformers>=4.35.0
 

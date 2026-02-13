@@ -182,14 +182,14 @@ async def run_transcription_task(transcription_id: str, audio_path: str, compose
             record["duration_seconds"] = result.duration_seconds
             record["completed_at"] = datetime.now(timezone.utc)
             
-        print(f"✓ Transcription completed: {transcription_id}")
+        print(f"[OK] Transcription completed: {transcription_id}")
         return result
         
     except Exception as exc:
         record = _transcriptions.get(transcription_id)
         if record:
             record["status"] = "failed"
-        print(f"✗ Transcription failed: {transcription_id} - {exc}")
+        print(f"[FAIL] Transcription failed: {transcription_id} - {exc}")
         import traceback
         traceback.print_exc()
         raise
@@ -390,7 +390,7 @@ async def _run_transcription_background(
         except Exception as e:
             print(f"Error saving completion to DB: {e}")
 
-        print(f"✓ Transcription completed: {transcription_id}")
+        print(f"[OK] Transcription completed: {transcription_id}")
 
     except HTTPException as he:
         record = _transcriptions.get(transcription_id)
@@ -404,7 +404,7 @@ async def _run_transcription_background(
             record["status"] = "failed"
             record["error"] = str(exc)
             record["progress_message"] = "處理失敗"
-        print(f"✗ Transcription failed: {transcription_id} - {exc}")
+        print(f"[FAIL] Transcription failed: {transcription_id} - {exc}")
         import traceback
         traceback.print_exc()
 

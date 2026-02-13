@@ -122,6 +122,49 @@
 
 ---
 
+## Bug 修復記錄（2026-02-13）
+
+### 樂譜與 MIDI 播放不一致
+- [x] **`_merge_consecutive_notes` 參數錯誤** — `sheet_generator.py` 傳入 `quarter_duration` 給 `eighth_duration` 參數，導致合併閾值為半音符（應為四分音符），音符被過度合併，時值嚴重偏差
+- [x] **MusicXML `<backup>` 修正** — 確保每個小節的 backup 元素總是回退完整小節長度，避免左手音符時間偏移
+- [x] **前端 MIDI 解析器左右手分配錯誤** — `midi_parser.dart` 用 track 編號判斷左右手，改為用 pitch >= 60 判斷，與後端 MusicXML 生成邏輯一致
+- [x] **Transcription 模型缺少欄位** — 新增 `progress`、`progress_message`、`musicxml_url`、`error` 欄位，與 raw SQL 操作對齊
+
+### 播放游標跳動/不同步
+- [x] **OSMD 游標步進效率** — 加入 `_lastCursorMeasure` 去重，避免同一小節重複步進；改用 `endReached` 判斷結束；使用 `cursorElement` 直接捲動
+- [x] **PlaybackScheduler 匹配邏輯** — 改為在所有活躍事件中找最近開始的音符，而非第一個匹配；無活躍音符時仍正確追蹤小節位置
+
+### 轉譜品質大幅提升（參考 Pop2Piano arranger 風格）
+- [x] **auto 模式不再強制 composer2** — 原本 `audio_to_midi` 的 auto 模式覆蓋 composer 為最簡單的 `composer2`，丟失大量旋律。改為尊重上層傳入的 composer 參數，預設使用 `top5` 自動選擇最佳風格
+- [x] **移除三重量化** — 原管線：Pop2Piano → `_enhanced_cleanup`（量化1）→ `quantize_midi`（量化2）→ MusicXML（量化3），每次量化累積誤差。改為 `_enhanced_cleanup` 只做分手和去重，`quantize_midi` 做唯一一次量化
+- [x] **保留原始力度動態** — 原本力度被壓縮到 60-100（40 的範圍），Pop2Piano 精心設計的動態被破壞。改為保留原始 velocity（30-127）
+- [x] **放寬同時發聲限制** — 右手 4→6、左手 3→4，保留 Pop2Piano 豐富和弦編曲
+- [x] **改善 top5 風格選擇** — 移除 `composer2`（太簡單），改用 `composer4/7/10/15/20` 覆蓋簡潔到豐富的完整範圍
+- [x] **改善低音部判斷** — 用 bass_ratio >= 15% 判斷是否需要補充左手，而非簡單的 `any(pitch < 60)`
+
+### UX 流程修正
+- [x] **上傳完成後直接開啟樂譜** — 原本導航到首頁，使用者不知道去哪裡看結果。改為直接跳轉到 `/sheet/{id}`
+- [x] **處理完成後直接開啟樂譜** — `_ProcessingView` 完成時也直接導航到樂譜頁面
+- [x] **修復 HomeScreen AppBar 語法錯誤** — 多餘的 `if (!_isSelectionMode)` 導致選擇模式按鈕消失，重構為清晰的 `if/else` 結構
+- [x] **編曲風格用使用者語言** — 移除技術術語（composer2/4/7），改用「🎵 標準」「🎹 豐富」等直覺標籤
+- [x] **PlaybackControls 在樂譜未載入時隱藏** — 避免使用者看到無效的播放按鈕
+- [x] **歷史卡片移除重複圖標** — subtitle 不再重複顯示狀態圖標，改善資訊層級
+
+### 效能優化
+- [x] **後端：模型啟動預載** — Pop2Piano 1.5GB 模型在 API 啟動時背景預載，避免首次請求等待 30-60 秒冷啟動
+- [x] **後端：auto 模式用單一 composer** — 原本 auto 測試 5 種風格（5x 推理時間），改為直接使用 `composer4`；使用者選了特定風格也直接用
+- [x] **後端：降低 beam search 開銷** — `num_beams` 從 3 降到 2（單一推理）/ 1（多風格比較），推理速度提升 ~2-3x
+- [x] **前端：MIDI + MusicXML 並行載入** — 原本序列載入（2 個 RTT），改為 `Future.wait` 並行（1 個 RTT）
+- [x] **前端：移除 OSMD 200ms 人工延遲** — `Future.delayed(200ms)` 改為 `Future.microtask`
+- [x] **前端：精簡鋼琴樣本** — Salamander Piano 從 30 個 HTTP 請求減少到 12 個（Tone.js 自動插值），載入速度提升 ~60%
+
+### 開發體驗 (DX) 改善
+- [x] **一鍵啟動腳本 `dev.ps1`** — `.\dev.ps1` 自動安裝依賴、建立 venv、啟動後端和前端，支援 `setup`/`backend`/`frontend` 子指令
+- [x] **移除 WSL 依賴** — 後端可直接在 Windows 上跑（SQLite + 本地儲存），不需要 WSL
+- [x] **API URL 改為 localhost** — 不再硬編碼 WSL IP（`172.27.106.129`），改為 `localhost:8000`
+- [x] **requirements.txt 整理** — torch/transformers/aiosqlite 從「optional」移到主列表，`dev.ps1` 會自動安裝
+- [x] **README 重寫** — 清晰的前置需求、一鍵啟動指南、手動啟動步驟
+
 ## 已知限制
 
 - ~~Python 3.13 不支援 basic-pitch 所需的 TensorFlow~~ → 已安裝 Python 3.12 venv，TensorFlow + basic-pitch 正常運作

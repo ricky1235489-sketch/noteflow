@@ -3,8 +3,11 @@ class AppConstants {
 
   static const String appName = 'NoteFlow';
 
-  // API (WSL backend)
-  static const String apiBaseUrl = 'http://172.27.106.129:8000/api/v1';
+  // API — auto-detect: works with both localhost and WSL
+  // When running backend on Windows (.\dev.ps1), use localhost.
+  // When running backend in WSL, change to your WSL IP.
+  // Flutter web runs in browser, so "localhost" = the machine serving the page.
+  static const String apiBaseUrl = 'http://localhost:8000/api/v1';
 
   // Audio
   static const int maxFileSizeBytes = 50 * 1024 * 1024; // 50MB

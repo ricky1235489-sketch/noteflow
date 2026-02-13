@@ -122,8 +122,8 @@ class _OsmdSheetWidgetState extends State<OsmdSheetWidget> {
       })();
     ''';
     
-    // 延遲執行腳本，確保 DOM 已掛載
-    Future.delayed(const Duration(milliseconds: 200), () {
+    // Use microtask to ensure DOM is mounted before script runs
+    Future.microtask(() {
       web.document.body?.appendChild(script);
     });
 
@@ -154,7 +154,13 @@ class _OsmdSheetWidgetState extends State<OsmdSheetWidget> {
     }
   }
   
+  int _lastCursorMeasure = -1;
+
   void _updateCursor(int measureIndex) {
+    // Skip redundant updates for the same measure
+    if (measureIndex == _lastCursorMeasure) return;
+    _lastCursorMeasure = measureIndex;
+
     final script = web.document.createElement('script') as web.HTMLScriptElement;
     script.text = '''
       (function() {
@@ -168,44 +174,56 @@ class _OsmdSheetWidgetState extends State<OsmdSheetWidget> {
             return;
           }
           
-          // Show and reset cursor
-          osmd.cursor.show();
-          osmd.cursor.reset();
-          
-          // Move to target measure by iterating
           var targetMeasure = Math.max(0, $measureIndex);
-          var iterations = 0;
-          var maxIterations = 1000; // Safety limit
+          var currentMeasureIdx = -1;
           
-          while (iterations < maxIterations) {
-            var currentMeasureIdx = osmd.cursor.iterator.currentMeasureIndex;
-            
-            if (currentMeasureIdx >= targetMeasure) {
-              break;
-            }
-            
-            if (!osmd.cursor.next()) {
-              break; // End of score
-            }
-            
-            iterations++;
+          try {
+            currentMeasureIdx = osmd.cursor.iterator.currentMeasureIndex;
+          } catch(e) {}
+          
+          // Only reset if we need to go backwards or cursor is hidden
+          if (currentMeasureIdx < 0 || targetMeasure < currentMeasureIdx) {
+            osmd.cursor.show();
+            osmd.cursor.reset();
+            currentMeasureIdx = 0;
+          } else {
+            osmd.cursor.show();
           }
           
-          // Force cursor update
+          // Advance cursor to target measure.
+          // cursor.next() moves by one note/beat, so we skip forward
+          // until we reach the target measure index.
+          var safety = 0;
+          var maxSafety = 5000;
+          
+          while (safety < maxSafety) {
+            try {
+              currentMeasureIdx = osmd.cursor.iterator.currentMeasureIndex;
+            } catch(e) { break; }
+            
+            if (currentMeasureIdx >= targetMeasure) break;
+            
+            // Check if cursor reached end of score
+            if (osmd.cursor.iterator.endReached) break;
+            
+            osmd.cursor.next();
+            safety++;
+          }
+          
+          // Force visual update
           osmd.cursor.update();
           
-          // Scroll cursor into view
+          // Scroll cursor element into view
           setTimeout(function() {
-            var cursorElements = document.querySelectorAll('.cursor');
-            if (cursorElements.length > 0) {
-              var lastCursor = cursorElements[cursorElements.length - 1];
-              lastCursor.scrollIntoView({ 
+            var cursorImg = osmd.cursor.cursorElement;
+            if (cursorImg) {
+              cursorImg.scrollIntoView({ 
                 behavior: 'smooth', 
                 block: 'center',
                 inline: 'center'
               });
             }
-          }, 50);
+          }, 30);
           
         } catch (e) {
           console.error('Cursor update error:', e);

@@ -149,18 +149,35 @@ class PlaybackScheduler {
       return;
     }
 
-    // Find current note and measure for highlighting
+    // Find the most recent active note and its measure for highlighting.
+    // We scan all events and pick the latest one whose scaled start time
+    // has been reached, so the cursor stays on the correct note/measure
+    // even when notes overlap or are dense.
     var currentNoteIndex = -1;
     var currentMeasure = 0;
+    var bestStartTime = -1.0;
 
     for (final event in _events) {
       final scaledStart = event.scaledStartTime(_tempoMultiplier);
       final scaledEnd = event.scaledEndTime(_tempoMultiplier);
 
       if (_currentTimeSec >= scaledStart && _currentTimeSec < scaledEnd) {
-        currentNoteIndex = event.noteIndex;
-        currentMeasure = event.measureIndex;
-        break;
+        // Among overlapping notes, prefer the one that started most recently
+        if (scaledStart > bestStartTime) {
+          bestStartTime = scaledStart;
+          currentNoteIndex = event.noteIndex;
+          currentMeasure = event.measureIndex;
+        }
+      }
+    }
+
+    // If no active note found, find the measure by time position
+    if (currentNoteIndex < 0 && _events.isNotEmpty) {
+      for (final event in _events.reversed) {
+        if (_currentTimeSec >= event.scaledStartTime(_tempoMultiplier)) {
+          currentMeasure = event.measureIndex;
+          break;
+        }
       }
     }
 

@@ -177,14 +177,15 @@ class SheetGenerator:
                                  if measure_start_tick <= e['start_tick'] < measure_end_tick]
             
             # 寫入右手 (voice 1, staff 1)
+            # _write_voice_to_measure 會用休止符填滿整個小節，
+            # 所以 backup 的 duration 總是 ticks_per_measure
             self._write_voice_to_measure(measure, rh_measure_events, measure_start_tick, 
                                          ticks_per_measure, divisions, voice='1', staff='1',
                                          key_fifths=fifths)
             
-            # backup 到小節開頭
-            if rh_measure_events or lh_measure_events:
-                backup = ET.SubElement(measure, 'backup')
-                ET.SubElement(backup, 'duration').text = str(ticks_per_measure)
+            # backup 到小節開頭（右手聲部總是填滿整個小節）
+            backup = ET.SubElement(measure, 'backup')
+            ET.SubElement(backup, 'duration').text = str(ticks_per_measure)
             
             # 寫入左手 (voice 2, staff 2)
             self._write_voice_to_measure(measure, lh_measure_events, measure_start_tick,
@@ -313,8 +314,9 @@ class SheetGenerator:
         min_duration = sixteenth_duration * 0.75  # 至少 3/4 個 16 分音符
         notes = [n for n in notes if (n.end - n.start) >= min_duration]
         
-        # 合併相近的同音音符（四分音符範圍內）
-        notes = self._merge_consecutive_notes(notes, quarter_duration)
+        # 合併相近的同音音符（八分音符範圍內）
+        eighth_duration = quarter_duration / 2
+        notes = self._merge_consecutive_notes(notes, eighth_duration)
         
         events = []
         for n in notes:

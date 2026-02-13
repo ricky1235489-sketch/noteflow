@@ -106,10 +106,21 @@ class SheetMusicNotifier extends StateNotifier<SheetMusicState> {
         return;
       }
 
-      // 載入 MIDI（必要）
-      final midiResponse = await midiDio.get<List<int>>(
+      // Load MIDI and MusicXML in parallel for faster loading
+      final midiFuture = midiDio.get<List<int>>(
         '/transcriptions/$transcriptionId/midi',
       );
+      final xmlFuture = dio.get<String>(
+        '/transcriptions/$transcriptionId/musicxml',
+      ).catchError((_) => Response<String>(
+        requestOptions: RequestOptions(),
+        data: null,
+      ));
+
+      final results = await Future.wait([midiFuture, xmlFuture]);
+
+      final midiResponse = results[0] as Response<List<int>>;
+      final xmlResponse = results[1] as Response<String>;
 
       final midiBytes = Uint8List.fromList(midiResponse.data!);
       final result = _parser.parseWithMeta(midiBytes);
@@ -121,22 +132,10 @@ class SheetMusicNotifier extends StateNotifier<SheetMusicState> {
         beatUnit: result.beatUnit,
       );
 
-      // 嘗試載入 MusicXML（可選，用於 OSMD 渲染）
-      String? musicXml;
-      try {
-        final xmlResponse = await dio.get<String>(
-          '/transcriptions/$transcriptionId/musicxml',
-        );
-        musicXml = xmlResponse.data;
-      } catch (e) {
-        // MusicXML 載入失敗不影響主流程，使用 fallback 渲染
-        print('MusicXML not available, using fallback renderer: $e');
-      }
-
       state = state.copyWith(
         status: SheetLoadStatus.loaded,
         sheetData: sheetData,
-        musicXml: musicXml,
+        musicXml: xmlResponse.data,
       );
     } on DioException catch (error) {
       if (error.response?.statusCode == 202) {
@@ -221,10 +220,21 @@ class SheetMusicNotifier extends StateNotifier<SheetMusicState> {
 
   Future<void> _loadMidiData(Dio dio, Dio midiDio) async {
     try {
-      // 載入 MIDI（必要）
-      final midiResponse = await midiDio.get<List<int>>(
+      // Load MIDI and MusicXML in parallel for faster loading
+      final midiFuture = midiDio.get<List<int>>(
         '/transcriptions/$transcriptionId/midi',
       );
+      final xmlFuture = dio.get<String>(
+        '/transcriptions/$transcriptionId/musicxml',
+      ).catchError((_) => Response<String>(
+        requestOptions: RequestOptions(),
+        data: null,
+      ));
+
+      final results = await Future.wait([midiFuture, xmlFuture]);
+
+      final midiResponse = results[0] as Response<List<int>>;
+      final xmlResponse = results[1] as Response<String>;
 
       final midiBytes = Uint8List.fromList(midiResponse.data!);
       final result = _parser.parseWithMeta(midiBytes);
@@ -236,21 +246,10 @@ class SheetMusicNotifier extends StateNotifier<SheetMusicState> {
         beatUnit: result.beatUnit,
       );
 
-      // 嘗試載入 MusicXML（可選，用於 OSMD 渲染）
-      String? musicXml;
-      try {
-        final xmlResponse = await dio.get<String>(
-          '/transcriptions/$transcriptionId/musicxml',
-        );
-        musicXml = xmlResponse.data;
-      } catch (e) {
-        print('MusicXML not available: $e');
-      }
-
       state = state.copyWith(
         status: SheetLoadStatus.loaded,
         sheetData: sheetData,
-        musicXml: musicXml,
+        musicXml: xmlResponse.data,
       );
     } catch (e) {
       state = state.copyWith(

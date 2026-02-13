@@ -244,15 +244,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               )
             : null,
         actions: [
-          if (!_isSelectionMode && history.items.isNotEmpty)
-            // 選擇模式按鈕
-            IconButton(
-              icon: const Icon(Icons.select_all),
-              onPressed: _toggleSelectionMode,
-              tooltip: '選擇',
-            ),
-          if (!_isSelectionMode)
           if (_isSelectionMode) ...[
+            // 選擇模式：全選 + 刪除
             IconButton(
               icon: const Icon(Icons.select_all),
               onPressed: _selectAll,
@@ -264,9 +257,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 onPressed: _showDeleteDialog,
                 tooltip: '刪除',
               ),
-          ],
-          // 用戶按鈕
-          if (!_isSelectionMode)
+          ] else ...[
+            // 一般模式：管理 + 用戶選單
+            if (history.items.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.checklist),
+                onPressed: _toggleSelectionMode,
+                tooltip: '管理',
+              ),
             IconButton(
               icon: CircleAvatar(
                 radius: 14,
@@ -285,6 +283,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
               onPressed: _showUserMenu,
             ),
+          ],
         ],
       ),
       body: Padding(
@@ -580,31 +579,20 @@ class _HistoryCard extends ConsumerWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Icon(
-                          leadingIcon,
-                          size: 12,
-                          color: leadingColor,
-                        ),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Text(
-                            item.isProcessing
-                                ? '${item.progressMessage ?? "處理中"} (${item.progress}%)'
-                                : statusText,
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: leadingColor,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
+                    // 狀態文字
+                    Text(
+                      item.isProcessing
+                          ? '${item.progressMessage ?? "處理中"} (${item.progress}%)'
+                          : statusText,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: leadingColor,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     // 處理中顯示進度條
                     if (item.isProcessing) ...[
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 6),
                       ClipRRect(
                         borderRadius: BorderRadius.circular(4),
                         child: LinearProgressIndicator(
@@ -616,16 +604,12 @@ class _HistoryCard extends ConsumerWidget {
                       ),
                     ],
                     // 日期
-                    Row(
-                      children: [
-                        const SizedBox(width: 16),
-                        Text(
-                          _formatDate(item.createdAt),
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.outline,
-                          ),
-                        ),
-                      ],
+                    const SizedBox(height: 2),
+                    Text(
+                      _formatDate(item.createdAt),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.outline,
+                      ),
                     ),
                   ],
                 ),

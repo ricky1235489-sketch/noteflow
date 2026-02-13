@@ -43,6 +43,14 @@ class TranscriptionService:
         self._progress_callback = progress_callback
 
     def transcribe(self, audio_path: str, transcription_id: str, mode: str = "auto", composer: str = "composer4") -> TranscriptionResult:
+        """音訊轉譜主流程
+
+        管線設計原則（參考 Pop2Piano: https://sweetcocoa.github.io/pop2piano_samples/）：
+        1. Pop2Piano 的 arranger 風格已產生高品質鋼琴編曲，盡量保留原始輸出
+        2. _enhanced_cleanup 只做最小清理（分手、去重），不做量化或力度壓縮
+        3. quantize_midi 做唯一一次量化（16th note grid），避免多次量化累積誤差
+        4. 只有當 Pop2Piano 輸出缺少低音部時，才用 ArrangementPatterns 補充左手
+        """
         self._validate_file(audio_path)
 
         output_dir = Path(settings.output_dir) / transcription_id
@@ -65,36 +73,45 @@ class TranscriptionService:
             logger.info(f"Audio duration: {duration:.1f}s")
 
             # 15-80%: 音訊 → MIDI (最耗時的步驟)
-            _report(15, f"分析音訊中... (歌曲長度: {int(duration)}秒)")
+            # Pop2Piano 會根據 composer/arranger 風格產生鋼琴編曲
+            _report(15, f"AI 分析音訊中... (歌曲長度: {int(duration)}秒)")
             logger.info(f"Transcribing with mode={mode}, composer={composer}")
             raw_midi = self.audio_processor.audio_to_midi(audio_path, mode=mode, composer=composer)
-            logger.info(f"MIDI generated with {sum(len(inst.notes) for inst in raw_midi.instruments)} notes")
+            raw_note_count = sum(len(inst.notes) for inst in raw_midi.instruments)
+            logger.info(f"MIDI generated with {raw_note_count} notes")
 
-            # 80-85%: 量化 MIDI
-            _report(80, "優化節奏與速度...")
+            # 80-85%: 單次量化（這是唯一的量化步驟）
+            # _enhanced_cleanup 已經不再做量化，只分離左右手
+            _report(80, "優化節奏...")
             quantized_midi = self.midi_converter.quantize_midi(raw_midi, grid="16th")
-            logger.info(f"Quantized MIDI to 16th note grid")
+            quantized_note_count = sum(len(inst.notes) for inst in quantized_midi.instruments)
+            logger.info(f"Quantized: {raw_note_count} → {quantized_note_count} notes")
 
-            # 85-90%: 處理左手編排
-            has_bass_notes = any(
-                note.pitch < 60 
-                for inst in quantized_midi.instruments 
+            # 85-90%: 檢查是否需要補充左手編排
+            bass_note_count = sum(
+                1 for inst in quantized_midi.instruments
                 for note in inst.notes
+                if note.pitch < 60
             )
+            total_note_count = sum(len(inst.notes) for inst in quantized_midi.instruments)
+            bass_ratio = bass_note_count / max(total_note_count, 1)
             
-            if has_bass_notes:
+            if bass_ratio >= 0.15:
+                # Pop2Piano 已產生足夠的低音部，直接使用
                 final_midi = quantized_midi
-                logger.info("Using Pop2Piano output directly (has bass notes)")
+                logger.info(f"Using Pop2Piano output directly (bass ratio: {bass_ratio:.1%})")
             else:
+                # 低音不足，用智慧編排補充左手
                 _report(85, "編排左手鋼琴分部...")
                 final_midi = self.midi_converter.create_two_hand_midi(quantized_midi)
-                logger.info("Added left hand arrangement")
+                logger.info(f"Added left hand arrangement (original bass ratio: {bass_ratio:.1%})")
 
             # 90-95%: 儲存 MIDI 和生成 MusicXML
             _report(90, "產生樂譜檔案...")
             midi_path = str(output_dir / "sheet.mid")
             final_midi.write(midi_path)
-            logger.info(f"MIDI saved: {midi_path}")
+            final_note_count = sum(len(inst.notes) for inst in final_midi.instruments)
+            logger.info(f"MIDI saved: {midi_path} ({final_note_count} notes)")
 
             # 95-100%: 生成 MusicXML
             musicxml_path = str(output_dir / "sheet.musicxml")
@@ -105,7 +122,7 @@ class TranscriptionService:
                 logger.warning(f"MusicXML generation failed: {e}")
                 musicxml_path = None
 
-            # 7. 嘗試產生 PDF
+            # 嘗試產生 PDF
             pdf_path = str(output_dir / "sheet.pdf")
             try:
                 self.sheet_generator.midi_to_pdf(midi_path, pdf_path)

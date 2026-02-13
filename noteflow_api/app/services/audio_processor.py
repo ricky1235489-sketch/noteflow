@@ -8,6 +8,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Module-level cache for preloaded model (set by main.py startup)
+_preloaded_model = None
+_preloaded_processor = None
+
 
 class AudioProcessor:
     """音訊轉鋼琴譜處理器
@@ -64,14 +68,23 @@ class AudioProcessor:
                 - "pop2piano_fast": 快速模式（只測試 5 個 composer）
                 - "bytedance": 高精度鋼琴轉錄
                 - "basic_pitch": 通用音高檢測
-            composer: Pop2Piano 編曲風格
-                - "auto": 自動選擇最佳（測試所有 21 種）
-                - "top5": 測試前 5 個最常用的 composer
+            composer: Pop2Piano 編曲風格（arranger style）
+                - "auto": 自動選擇最佳（測試 top5 風格）
+                - "top5": 測試前 5 個常用風格
                 - "composer1" ~ "composer21": 指定風格
+                  Pop2Piano 有 21 種 arranger 風格，每種對應不同 YouTube 鋼琴家：
+                  - composer2: Simple & Clean（簡潔，但可能丟失旋律）
+                  - composer4: Balanced（平衡推薦）⭐
+                  - composer7: Rich & Complex（豐富複雜）
+                  - composer10: Moderate（中等難度）
+                  - composer15: Full Arrangement（完整編曲）
+                  參考：https://sweetcocoa.github.io/pop2piano_samples/
         """
         if mode == "auto":
             mode = "pop2piano"
-            composer = "composer2"  # Use simpler composer for cleaner sheets
+            # Respect the caller's composer choice; only default if "auto"
+            if composer == "auto":
+                composer = "composer4"  # Single best style — fast default
         
         if mode == "hybrid":
             try:
@@ -405,6 +418,12 @@ class AudioProcessor:
         from transformers import Pop2PianoForConditionalGeneration, Pop2PianoProcessor
 
         # 載入模型（首次會下載約 1.5GB）
+        # Check if model was preloaded at startup (see main.py lifespan)
+        if self._pop2piano_model is None and _preloaded_model is not None:
+            logger.info("Using preloaded Pop2Piano model (fast)")
+            self._pop2piano_model = _preloaded_model
+            self._pop2piano_processor = _preloaded_processor
+
         if self._pop2piano_model is None:
             model_source = self._custom_model_path or "sweetcocoa/pop2piano"
             logger.info(f"Loading Pop2Piano model from: {model_source}")
@@ -451,23 +470,25 @@ class AudioProcessor:
             inputs = {k: v.cuda() if hasattr(v, 'cuda') else v for k, v in inputs.items()}
 
         if composer not in ("auto", "top3", "top5"):
-            # 使用指定的 composer
+            # 使用指定的 composer（arranger style）— 單次推理，最快
+            # 參考 Pop2Piano arranger 風格：https://sweetcocoa.github.io/pop2piano_samples/
             midi = self._generate_with_composer(inputs, composer)
             return self._enhanced_cleanup(midi)
         
-        # 自動選擇：測試多種 composer 風格，選擇最佳結果
+        # 自動選擇：測試多種 arranger 風格，選擇最佳結果
+        # Pop2Piano 的 21 種 arranger 風格對應不同 YouTube 鋼琴家的演奏風格
         if composer == "top3":
             # 測試前 3 個最佳風格（更快）
             composers_to_try = ["composer4", "composer7", "composer10"]
-            logger.info("Testing top 3 composer styles...")
+            logger.info("Testing top 3 arranger styles...")
         elif composer == "top5" or fast_mode:
-            # 測試前 5 個常用風格
-            composers_to_try = ["composer2", "composer4", "composer7", "composer10", "composer15"]
-            logger.info("Testing top 5 composer styles...")
+            # 測試 5 個代表性風格（覆蓋簡潔→豐富的範圍）
+            composers_to_try = ["composer4", "composer7", "composer10", "composer15", "composer20"]
+            logger.info("Testing top 5 arranger styles...")
         else:
             # 完整模式：測試所有 21 種風格
             composers_to_try = [f"composer{i}" for i in range(1, 22)]
-            logger.info("Testing all 21 composer styles...")
+            logger.info("Testing all 21 arranger styles...")
         
         best_midi = None
         best_score = -1
@@ -476,7 +497,8 @@ class AudioProcessor:
         
         for comp in composers_to_try:
             try:
-                midi = self._generate_with_composer(inputs, comp)
+                # Use fast (greedy) decoding when comparing multiple styles
+                midi = self._generate_with_composer(inputs, comp, fast=True)
                 score = self._evaluate_arrangement_quality(midi)
                 results.append((comp, score))
                 
@@ -579,15 +601,23 @@ class AudioProcessor:
         
         return self._enhanced_cleanup(final_midi)
     
-    def _generate_with_composer(self, inputs, composer: str) -> "pretty_midi.PrettyMIDI":
-        """使用指定 composer 生成 MIDI"""
+    def _generate_with_composer(self, inputs, composer: str, fast: bool = False) -> "pretty_midi.PrettyMIDI":
+        """使用指定 composer 生成 MIDI
+
+        Args:
+            inputs: 處理後的音訊特徵
+            composer: arranger 風格名稱
+            fast: 快速模式 — 使用 greedy decoding (num_beams=1) 加速 ~3x
+        """
         import torch
         
         generate_kwargs = {
             "input_features": inputs["input_features"],
             "composer": composer,
             "max_length": 2048,
-            "num_beams": 3,
+            # num_beams=1 (greedy) is ~3x faster than beam search
+            # Quality difference is minimal for piano transcription
+            "num_beams": 1 if fast else 2,
         }
         if "attention_mask" in inputs:
             generate_kwargs["attention_mask"] = inputs["attention_mask"]
@@ -667,10 +697,15 @@ class AudioProcessor:
         return total_score
 
     def _enhanced_cleanup(self, midi: "pretty_midi.PrettyMIDI") -> "pretty_midi.PrettyMIDI":
-        """增強版清理：分離左右手 + 量化 + 力度正規化
+        """輕量清理：分離左右手 + 移除雜訊，保留 Pop2Piano 原始品質
         
-        目標：產生更接近 PopPianoAI 品質的輸出
-        使用統一的量化策略，確保時值一致性
+        Pop2Piano 的 arranger 風格已經產生了高品質的鋼琴編曲
+        （參考 https://sweetcocoa.github.io/pop2piano_samples/）。
+        過度量化和力度壓縮會破壞原始品質，因此這裡只做最小限度的清理：
+        1. 過濾無效音符（零長度、極弱）
+        2. 分離左右手（以 Middle C 為分界）
+        3. 移除完全重複的音符
+        4. 保留原始力度和時值（不做量化，交給下游 quantize_midi 統一處理）
         """
         import pretty_midi as pm
         
@@ -691,44 +726,24 @@ class AudioProcessor:
         right_hand = pm.Instrument(program=0, name="Right Hand")
         left_hand = pm.Instrument(program=0, name="Left Hand")
         
-        # 量化參數
-        beat_duration = 60.0 / tempo
-        sixteenth = beat_duration / 4
-        
-        # 分離左右手
         SPLIT_POINT = 60  # Middle C
         
-        # 量化並過濾
         for note in all_notes:
-            if note.velocity < 15:  # 過濾極弱音符
+            # 只過濾明顯無效的音符
+            if note.velocity < 10:
                 continue
             if note.end <= note.start:
                 continue
             
-            # 輕量量化到 16 分音符網格
-            quantized_start = round(note.start / sixteenth) * sixteenth
-            quantized_end = round(note.end / sixteenth) * sixteenth
-            
-            # 確保最小時值（至少 50% 網格）
-            min_duration = sixteenth * 0.5
-            if quantized_end <= quantized_start:
-                quantized_end = quantized_start + sixteenth
-            
-            # 確保音符時值合理
-            raw_duration = quantized_end - quantized_start
-            quarter_duration = beat_duration
-            rounded_duration = self._round_to_standard_duration(raw_duration, quarter_duration)
-            quantized_end = quantized_start + rounded_duration
-            
-            # 力度正規化到 60-100 範圍（更自然的動態範圍）
-            normalized_velocity = int(60 + (note.velocity / 127) * 40)
-            normalized_velocity = max(60, min(100, normalized_velocity))
+            # 保留原始力度 — Pop2Piano 的力度反映了原曲的動態
+            # 只做輕微的下限保護（避免聽不見的音符）
+            velocity = max(30, min(127, note.velocity))
             
             new_note = pm.Note(
-                velocity=normalized_velocity,
+                velocity=velocity,
                 pitch=note.pitch,
-                start=quantized_start,
-                end=quantized_end,
+                start=note.start,
+                end=note.end,
             )
             
             if note.pitch >= SPLIT_POINT:
@@ -736,13 +751,13 @@ class AudioProcessor:
             else:
                 left_hand.notes.append(new_note)
         
-        # 移除重複音符
+        # 移除完全重複的音符
         right_hand.notes = self._remove_duplicate_notes(right_hand.notes)
         left_hand.notes = self._remove_duplicate_notes(left_hand.notes)
         
-        # 限制同時發聲的音符數（避免過於密集）
-        right_hand.notes = self._limit_simultaneous_notes(right_hand.notes, max_notes=4)
-        left_hand.notes = self._limit_simultaneous_notes(left_hand.notes, max_notes=3)
+        # 限制同時發聲（允許更多音符以保留和弦豐富度）
+        right_hand.notes = self._limit_simultaneous_notes(right_hand.notes, max_notes=6)
+        left_hand.notes = self._limit_simultaneous_notes(left_hand.notes, max_notes=4)
         
         new_midi.instruments.append(right_hand)
         new_midi.instruments.append(left_hand)

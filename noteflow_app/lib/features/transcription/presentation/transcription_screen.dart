@@ -18,14 +18,13 @@ class TranscriptionScreen extends ConsumerWidget {
     final uploadState = ref.watch(uploadProvider);
     final notifier = ref.read(uploadProvider.notifier);
 
-    // Navigate to sheet music when completed
+    // Navigate to sheet music page when transcription is created
     ref.listen(uploadProvider, (prev, next) {
       if (next.status == UploadStatus.completed && next.result != null) {
         final historyNotifier = ref.read(historyProvider.notifier);
         historyNotifier.addTranscription(next.result!);
-        // Navigate to homepage instead of sheet music directly
-        // This allows users to see all transcriptions and their status
-        context.go('/');
+        // Go directly to sheet music — user expects to see results
+        context.go('/sheet/${next.result!.id}');
         notifier.reset();
       }
     });
@@ -81,12 +80,11 @@ class _IdleViewState extends ConsumerState<_IdleView> {
   String _selectedComposer = 'composer4'; // Default: Balanced
 
   final Map<String, String> _composerOptions = {
-    'composer2': 'Simple & Clean (簡單清晰)',
-    'composer4': 'Balanced (平衡推薦) ⭐',
-    'composer7': 'Rich & Complex (豐富複雜)',
-    'composer10': 'Moderate (中等難度)',
-    'composer15': 'Full Arrangement (完整編曲)',
-    'composer20': 'Advanced (進階)',
+    'composer4': '🎵 標準 — 適合大多數歌曲',
+    'composer7': '🎹 豐富 — 更多和弦與旋律細節',
+    'composer10': '🎼 中等 — 平衡複雜度',
+    'composer15': '🎶 完整 — 接近原曲的完整編曲',
+    'composer2': '📝 簡潔 — 容易彈奏的簡化版',
   };
 
   @override
@@ -108,7 +106,7 @@ class _IdleViewState extends ConsumerState<_IdleView> {
                     Icon(Icons.piano, color: theme.colorScheme.primary),
                     const SizedBox(width: 8),
                     Text(
-                      '編曲風格',
+                      '樂譜風格',
                       style: theme.textTheme.titleMedium,
                     ),
                   ],
@@ -120,23 +118,23 @@ class _IdleViewState extends ConsumerState<_IdleView> {
                     border: OutlineInputBorder(),
                     contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   ),
+                  isExpanded: true,
                   items: _composerOptions.entries.map((entry) {
                     return DropdownMenuItem(
                       value: entry.key,
-                      child: Text(entry.value),
+                      child: Text(entry.value, overflow: TextOverflow.ellipsis),
                     );
                   }).toList(),
                   onChanged: (value) {
                     if (value != null) {
                       setState(() => _selectedComposer = value);
-                      // Store selection in provider
                       ref.read(uploadProvider.notifier).setComposer(value);
                     }
                   },
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '選擇 AI 編曲風格，影響樂譜的複雜度和音符密度',
+                  '選擇產生的鋼琴樂譜複雜度',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
@@ -385,11 +383,11 @@ class _ProcessingViewState extends ConsumerState<_ProcessingView> {
             _progressMessage = progressMessage;
           });
 
-          // 如果完成，導航到首頁
+          // 完成後直接開啟樂譜
           if (status == 'completed') {
             if (mounted) {
               _pollingTimer?.cancel();
-              context.go('/');
+              context.go('/sheet/${widget.transcriptionId}');
             }
           }
         }

@@ -179,8 +179,11 @@ class MidiParser {
     final startTime = _ticksToSeconds(noteOn.tick, ticksPerBeat, tempo);
     final endTime = _ticksToSeconds(offTick, ticksPerBeat, tempo);
 
-    // hand: track 0 or high pitch = right hand (treble)
-    final hand = (track >= 2 || pitch < _middleC) ? 1 : 0;
+    // Use pitch-based hand assignment to match backend MusicXML generation.
+    // Backend (sheet_generator.py) splits at MIDI pitch 60 (Middle C):
+    //   pitch >= 60 → right hand (treble, staff 1)
+    //   pitch <  60 → left hand (bass, staff 2)
+    final hand = pitch >= _middleC ? 0 : 1;
 
     output.add(MusicNote(
       midiPitch: pitch,

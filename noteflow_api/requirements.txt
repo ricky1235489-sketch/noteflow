@@ -1,22 +1,30 @@
+# ── Core ──
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 pydantic==2.9.2
 pydantic-settings==2.5.2
-pretty-midi==0.2.10
-music21==9.1.0
 sqlalchemy==2.0.35
 alembic==1.13.2
-boto3==1.35.0
+aiosqlite==0.20.0
 python-jose[cryptography]==3.3.0
 httpx==0.27.2
+
+# ── Audio & MIDI ──
+pretty-midi==0.2.10
 librosa>=0.10.0
 tqdm>=4.65.0
 
-# Optional - install separately if needed:
-# basic-pitch>=0.3.0  # requires tensorflow
-# piano-transcription-inference==0.0.5  # requires torch
-# celery[redis]==5.4.0  # requires redis server
-# asyncpg==0.29.0  # requires postgres
-# transformers>=4.35.0  # for pop2piano
-# torch>=2.0.0  # for pop2piano
+# ── AI Models (Pop2Piano) ──
+torch>=2.0.0
+transformers>=4.35.0
+
+# ── Storage (local dev, S3 for prod) ──
+boto3==1.35.0
+
+# ── Optional (uncomment if needed) ──
+# basic-pitch>=0.3.0       # Spotify pitch detection (fallback)
+# piano-transcription-inference==0.0.5  # ByteDance model
+# celery[redis]==5.4.0      # Task queue (prod)
+# asyncpg==0.29.0           # PostgreSQL (prod)
+# music21==9.1.0            # Music analysis

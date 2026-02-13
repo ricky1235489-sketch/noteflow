@@ -50,10 +50,51 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     
     logger.info("Database initialized")
+
+    # Preload Pop2Piano model in background to avoid cold-start delay
+    # First request would otherwise wait 30-60s for model download/load
+    import asyncio
+    asyncio.create_task(_preload_model())
+
     yield
     
     logger.info("Shutting down NoteFlow API...")
     await engine.dispose()
+
+
+async def _preload_model():
+    """Preload the Pop2Piano model in background on startup."""
+    import asyncio
+    try:
+        logger.info("Preloading Pop2Piano model in background...")
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _load_pop2piano_model)
+        logger.info("Pop2Piano model preloaded successfully")
+    except Exception as e:
+        logger.warning(f"Model preload failed (will load on first request): {e}")
+
+
+def _load_pop2piano_model():
+    """Synchronous model loading for executor."""
+    try:
+        from transformers import Pop2PianoForConditionalGeneration, Pop2PianoProcessor
+        import torch
+
+        processor = Pop2PianoProcessor.from_pretrained("sweetcocoa/pop2piano")
+        model = Pop2PianoForConditionalGeneration.from_pretrained("sweetcocoa/pop2piano")
+
+        if torch.cuda.is_available():
+            model = model.cuda()
+        model.eval()
+
+        # Store in module-level cache for AudioProcessor to pick up
+        import noteflow_api.app.services.audio_processor as ap_module
+        if hasattr(ap_module, 'AudioProcessor'):
+            # Pre-populate the class-level cache
+            ap_module._preloaded_model = model
+            ap_module._preloaded_processor = processor
+    except Exception as e:
+        logger.warning(f"Pop2Piano preload error: {e}")
 
 
 def create_app() -> FastAPI:

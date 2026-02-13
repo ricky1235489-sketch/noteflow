@@ -150,7 +150,10 @@ class _SheetMusicScreenState extends ConsumerState<SheetMusicScreen> with Widget
               child: _buildSheetContent(sheetState, playbackState, theme),
             ),
           ),
-          const PlaybackControls(),
+          // Only show playback controls when sheet data is loaded
+          if (sheetState.status == SheetLoadStatus.loaded &&
+              sheetState.sheetData != null)
+            const PlaybackControls(),
         ],
       ),
       ),

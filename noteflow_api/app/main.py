@@ -77,10 +77,12 @@ async def _preload_model():
 def _load_pop2piano_model():
     """Synchronous model loading for executor."""
     try:
-        from transformers import Pop2PianoForConditionalGeneration, Pop2PianoProcessor
+        from transformers import Pop2PianoForConditionalGeneration
         import torch
 
-        processor = Pop2PianoProcessor.from_pretrained("sweetcocoa/pop2piano")
+        # Use the same fallback loader as AudioProcessor
+        from .services.audio_processor import _load_pop2piano_processor
+        processor = _load_pop2piano_processor("sweetcocoa/pop2piano")
         model = Pop2PianoForConditionalGeneration.from_pretrained("sweetcocoa/pop2piano")
 
         if torch.cuda.is_available():
@@ -88,11 +90,9 @@ def _load_pop2piano_model():
         model.eval()
 
         # Store in module-level cache for AudioProcessor to pick up
-        import noteflow_api.app.services.audio_processor as ap_module
-        if hasattr(ap_module, 'AudioProcessor'):
-            # Pre-populate the class-level cache
-            ap_module._preloaded_model = model
-            ap_module._preloaded_processor = processor
+        from .services import audio_processor as ap_module
+        ap_module._preloaded_model = model
+        ap_module._preloaded_processor = processor
     except Exception as e:
         logger.warning(f"Pop2Piano preload error: {e}")
 

@@ -13,6 +13,84 @@ _preloaded_model = None
 _preloaded_processor = None
 
 
+def _load_pop2piano_processor(model_source: str = "sweetcocoa/pop2piano"):
+    """Load Pop2Piano processor with essentia-free fallback.
+
+    Pop2PianoProcessor and Pop2PianoFeatureExtractor both require the `essentia`
+    library which doesn't build on Python 3.13 / Windows.
+
+    Fallback: use Pop2PianoTokenizer (for decoding) and a custom librosa-based
+    feature extractor (for encoding audio → mel spectrogram → model inputs).
+    """
+    try:
+        from transformers import Pop2PianoProcessor
+        proc = Pop2PianoProcessor.from_pretrained(model_source)
+        logger.info("Pop2PianoProcessor loaded (essentia available)")
+        return proc
+    except (ImportError, OSError):
+        pass
+
+    try:
+        from transformers import Pop2PianoFeatureExtractor
+        fe = Pop2PianoFeatureExtractor.from_pretrained(model_source)
+        logger.info("Pop2PianoFeatureExtractor loaded")
+        return fe
+    except (ImportError, OSError):
+        pass
+
+    # Final fallback: custom librosa-based processor
+    logger.warning("essentia not available — using librosa-based Pop2Piano processor")
+    return _LibrosaPop2PianoProcessor(model_source)
+
+
+class _LibrosaPop2PianoProcessor:
+    """Minimal Pop2Piano processor using librosa instead of essentia.
+
+    Handles:
+    - __call__: audio → mel spectrogram → model input_features (encoding)
+    - batch_decode: model token_ids → PrettyMIDI objects (decoding)
+    """
+
+    def __init__(self, model_source: str = "sweetcocoa/pop2piano"):
+        from transformers import Pop2PianoTokenizer
+        self._tokenizer = Pop2PianoTokenizer.from_pretrained(model_source)
+
+    def __call__(self, audio, sampling_rate: int = 44100, return_tensors: str = "pt"):
+        """Convert audio waveform to mel spectrogram model inputs."""
+        import torch
+        import numpy as np
+        import librosa
+
+        # Resample to 22050 Hz (Pop2Piano's internal rate) if needed
+        target_sr = 22050
+        if sampling_rate != target_sr:
+            audio = librosa.resample(audio, orig_sr=sampling_rate, target_sr=target_sr)
+
+        # Compute log-mel spectrogram (matching Pop2Piano's expected input)
+        mel_spec = librosa.feature.melspectrogram(
+            y=audio,
+            sr=target_sr,
+            n_fft=4096,
+            hop_length=1024,
+            n_mels=512,
+            fmin=30,
+            fmax=target_sr // 2,
+        )
+        log_mel = np.log(np.clip(mel_spec, a_min=1e-6, a_max=None))
+
+        # Shape: (1, n_mels, time_frames) → model expects (batch, channels, time)
+        input_features = torch.FloatTensor(log_mel).unsqueeze(0)
+
+        return {"input_features": input_features}
+
+    def batch_decode(self, token_ids, feature_extractor_output):
+        """Decode model output token IDs to PrettyMIDI objects."""
+        return self._tokenizer.batch_decode(
+            token_ids=token_ids,
+            feature_extractor_output=feature_extractor_output,
+        )
+
+
 class AudioProcessor:
     """音訊轉鋼琴譜處理器
 
@@ -415,7 +493,7 @@ class AudioProcessor:
         """
         import librosa
         import pretty_midi as pm
-        from transformers import Pop2PianoForConditionalGeneration, Pop2PianoProcessor
+        from transformers import Pop2PianoForConditionalGeneration
 
         # 載入模型（首次會下載約 1.5GB）
         # Check if model was preloaded at startup (see main.py lifespan)
@@ -428,9 +506,9 @@ class AudioProcessor:
             model_source = self._custom_model_path or "sweetcocoa/pop2piano"
             logger.info(f"Loading Pop2Piano model from: {model_source}")
             
-            self._pop2piano_processor = Pop2PianoProcessor.from_pretrained(
-                model_source if self._custom_model_path else "sweetcocoa/pop2piano"
-            )
+            # Use Pop2PianoFeatureExtractor instead of Pop2PianoProcessor
+            # to avoid the essentia dependency (not available on Python 3.13 Windows)
+            self._pop2piano_processor = _load_pop2piano_processor(model_source)
             self._pop2piano_model = Pop2PianoForConditionalGeneration.from_pretrained(
                 model_source
             )
